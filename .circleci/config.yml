@@ -1,0 +1,114 @@
+version: 2.1
+
+jobs:
+  runner-test:
+    machine: true
+    resource_class: shashika/demo1
+    steps:
+      - run:
+          name: Greeting
+          command: echo "Hi I'm on Runners ! "
+
+      # Step 1: Check out the repository code.
+      - checkout
+
+      - run:
+          name: Checkout dev branch
+          command: |
+            echo "⏬ Fetching and checking out 'dev' branch…"
+            # Fetch remote dev into a local branch called dev (overwrite if exists)
+            git fetch origin dev:dev
+            git checkout dev
+
+      # Step 2: Install Node.js (via Homebrew) so we can use npx
+      - run:
+          name: Ensure Node.js is installed
+          command: |
+            if ! command -v node >/dev/null; then
+              echo "Node.js not found; installing via Homebrew..."
+              brew update
+              brew install node
+            else
+              echo "Node.js already installed: $(node -v)"
+            fi
+
+      # Step 3: Lint your OpenAPI spec with Spectral via npx
+      - run:
+          name: Lint API Spec with Spectral
+          command: |
+            echo "🔍 Running Spectral lint via npx…"
+            # Install nvm before using it
+            curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh | bash
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"  # This loads nvm
+            nvm install 18.18.0
+            nvm use 18.18.0
+            # Ensure the .spectral.yml file exists
+            if [ ! -f "$HOME/circleci/.spectral.yml" ]; then
+              echo "Error: .spectral.yml file not found at $HOME/circleci/.spectral.yml"
+              exit 1
+            fi
+            # npx will download & invoke Spectral on-the-fly, using your local .spectral.yml
+            npx @stoplight/spectral-cli@6 lint ./SampleAPI/Definitions/swagger.yaml \
+              --ruleset $HOME/circleci/.spectral.yml \
+              --fail-severity error
+
+      # Step 4: Install apictl
+      - run:
+          name: Install apictl
+          command: |
+            echo "Downloading apictl binary..."
+            curl -L -o apictl.tar.gz \
+              "https://github.com/wso2/product-apim-tooling/releases/download/v4.4.1/apictl-4.4.1-darwin-amd64.tar.gz"
+            mkdir -p /tmp/apictl
+            tar -xzvf apictl.tar.gz -C /tmp/apictl
+            if [ -f "/tmp/apictl/apictl/apictl" ]; then
+              mv /tmp/apictl/apictl/apictl ~/apictl
+            elif [ -f "/tmp/apictl/apictl" ]; then
+              mv /tmp/apictl/apictl ~/apictl
+            else
+              echo "apictl binary not found!" && exit 1
+            fi
+            chmod +x ~/apictl
+            echo 'export PATH=~/apictl:$PATH' >> ~/.bashrc
+            export PATH=~/apictl:$PATH
+            echo "Installed apictl version:" && ~/apictl version
+            export APICTL_TIMEOUT=120
+
+      # Step 5: Check APIM URL (local test)
+      - run:
+          name: Check APIM URL
+          command: curl -I https://localhost:9443/publisher -k
+
+      # Step 6: List directory contents
+      - run:
+          name: List Directory Contents
+          command: ls -la
+
+      # Step 7: Configure the APIM environment
+      - run:
+          name: Configure APIM Environment
+          command: |
+            ~/apictl remove env dev || true
+            export APICLIENT_TIMEOUT=120
+            ~/apictl add env dev --apim https://localhost:9443
+
+      # Step 8: Login to APIM
+      - run:
+          name: Login to APIM
+          command: |
+            echo "Logging in to APIM..."
+            ~/apictl version
+            echo "admin" | ~/apictl login dev --insecure -u admin --password-stdin -k
+
+      # Step 9: Import the API project
+      - run:
+          name: Import API Project
+          command: |
+            ~/apictl import api --file ./SampleAPI --environment dev -k --rotate-revision
+
+workflows:
+  version: 2
+  testing:
+    jobs:
+      - runner-test
